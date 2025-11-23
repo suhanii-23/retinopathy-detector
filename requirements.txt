@@ -1,7 +1,7 @@
-gradio==4.44.0
+gradio>=4.57
 tensorflow==2.15.0
 opencv-python-headless==4.8.1.78
 pillow==10.1.0
 numpy==1.24.3
 requests
-huggingface-hub>=0.19.3
+huggingface-hub>=1.0.0
