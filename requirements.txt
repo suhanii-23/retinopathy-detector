@@ -4,3 +4,4 @@ opencv-python-headless==4.8.1.78
 pillow==10.1.0
 numpy==1.24.3
 requests
+huggingface-hub>=0.19.3
