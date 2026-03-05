@@ -1,3 +1,4 @@
+[![HuggingFace Demo](https://img.shields.io/badge/🤗%20Live%20Demo-HuggingFace-yellow)](https://huggingface.co/spaces/suhanii23/retinopathy-detector)
 # 👁️ Diabetic Retinopathy Detector
 
 An AI-powered tool for detecting and classifying diabetic retinopathy from retinal fundus images into five severity stages.
