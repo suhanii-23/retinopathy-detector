@@ -76,14 +76,17 @@ def predict_dr(image):
         binary_pred = (predictions > 0.5).astype(int)
         final_class = binary_pred.sum(axis=1)[0] - 1
         
-        confidences = {CLASSES[i]: float(predictions[0][i]) for i in range(len(CLASSES))}
+        confidence_str = "\n".join([
+            f"{CLASSES[i]}: {predictions[0][i]:.2%}"
+            for i in range(len(CLASSES))
+        ])
         result_class = CLASSES[final_class]
         description = CLASS_DESCRIPTIONS[result_class]
         
         return (
             processed,
             f"**Diagnosis: {result_class}**\n\n{description}",
-            confidences
+            confidence_str
         )
     
     except Exception as e:
@@ -106,7 +109,7 @@ with gr.Blocks(title="Diabetic Retinopathy Detector") as demo:
         with gr.Column():
             processed_image = gr.Image(label="Preprocessed Image")
             diagnosis = gr.Markdown()
-            confidence = gr.Label(label="Confidence Scores", num_top_classes=5)
+            confidence = gr.Textbox(label="Confidence Scores", lines=5)
     
     predict_btn.click(
         fn=predict_dr,
