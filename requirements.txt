@@ -1,9 +1,6 @@
 gradio==4.44.0
-tensorflow==2.15.0
-numpy==1.24.3
+tensorflow==2.16.2
 opencv-python-headless
 pillow
-scikit-learn
-matplotlib
-seaborn
-requests
+numpy
+huggingface_hub==0.23.0
