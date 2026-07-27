@@ -32,28 +32,83 @@ Diabetic retinopathy is a diabetes complication that affects the eyes, caused by
 
 ## Results
 
-| Metric                         | Value                          |
-| ------------------------------ | ------------------------------ |
-| Validation Accuracy            | TODO_ACCURACY                  |
-| Quadratic Weighted Kappa (QWK) | TODO_QWK                       |
-| Dataset                        | APTOS 2019 Blindness Detection |
-| Model                          | Xception (Transfer Learning)   |
+Measured against the exact validation split (`test_size=0.15, random_state=2006,
+stratified` — 550 images, 29 of them Severe), reproduced deterministically from the
+same seed used during training.
 
-> These numbers are being regenerated with `evaluate.py` against the saved validation
-> split. The previous values published here were incorrect — see `CHANGES.md` for
-> details on how that was discovered.
+| Metric                          | Value                          |
+| -------------------------------- | ------------------------------ |
+| Quadratic Weighted Kappa (QWK)    | **0.883**                      |
+| Validation Accuracy              | 77.1%                          |
+| Validation Set Size              | 550 images                     |
+| Dataset                          | APTOS 2019 Blindness Detection |
+| Model                            | Xception (Transfer Learning)   |
+
+### Why QWK, not accuracy, is the headline metric
+
+The five DR grades are **ordinal**, not categorical — mistaking No DR for
+Proliferative is a far more serious error than mistaking Mild for Moderate. QWK
+penalizes disagreements by `(i - j)²`, the squared distance between predicted and
+true grade, so it captures this directly; plain accuracy treats every misclassification
+as equally bad regardless of distance.
+
+Accuracy is also misleading on this class distribution: **49% of the validation set
+is No DR**, so a trivial majority-class predictor scores roughly 49% accuracy while
+being clinically useless. QWK is chance-corrected — that same majority-class
+predictor scores close to **0** — which is why it's the official APTOS competition
+metric and the more honest headline number here.
 
 ### Per-Class Performance
 
-**TODO — needs regenerating with `evaluate.py`.**
+| Class         | Support | Precision | Recall | F1-Score |
+| ------------- | ------- | --------- | ------ | -------- |
+| No DR         | 271     | 0.981     | 0.978  | 0.980    |
+| Mild          | 56      | 0.434     | 0.821  | 0.568    |
+| Moderate      | 150     | 0.802     | 0.487  | 0.606    |
+| Severe        | 29      | 0.349     | 0.759  | 0.478    |
+| Proliferative | 44      | 0.900     | 0.409  | 0.563    |
 
-| Class         | Precision | Recall | F1-Score |
-| ------------- | --------- | ------ | -------- |
-| No DR         | TODO      | TODO   | TODO     |
-| Mild          | TODO      | TODO   | TODO     |
-| Moderate      | TODO      | TODO   | TODO     |
-| Severe        | TODO      | TODO   | TODO     |
-| Proliferative | TODO      | TODO   | TODO     |
+Mild and Severe both show high recall paired with low precision — the expected
+signature of balanced class weighting pulling the decision boundary toward the
+minority classes. The model over-predicts these classes relative to their true
+frequency, catching most true Mild/Severe cases but at the cost of also mislabeling
+some adjacent-grade cases as Mild/Severe.
+
+![Confusion matrix](assets/confusion_matrix.png)
+
+### Error Structure
+
+| Distance from true grade | Count |
+| ------------------------- | ----- |
+| 1 grade                   | 109   |
+| 2 grades                  | 12    |
+| 3 grades                  | 5     |
+| 4 grades                  | 0     |
+
+Mean error distance: **1.17** grades. **86.5%** of all misclassifications (109 of
+126) are off by only one grade, and **zero** predictions across all 550 images are
+off by the maximum possible distance of four grades — no catastrophic
+misclassification occurred. This is exactly why QWK (0.883) comes out well above raw
+accuracy (0.771): QWK rewards the fact that when the model is wrong, it's usually
+only slightly wrong.
+
+The largest individual confusions are Moderate→Mild (47 cases), Moderate→Severe (26),
+and Proliferative→Severe (15) — all adjacent-grade errors.
+
+### Referable DR (screening threshold: Moderate or worse)
+
+| Metric      | Value |
+| ----------- | ----- |
+| Sensitivity | 0.749 |
+| Specificity | 0.979 |
+
+This operating point is tuned the wrong way for a screening tool: a missed referral
+(false negative) costs far more than an unnecessary one (false positive), since a
+missed referral can mean a patient with sight-threatening disease goes unseen.
+Specificity is at 0.979 — there is substantial headroom to trade some of it away.
+**Lowering the referral decision threshold is the clearest next improvement, and it
+requires no retraining** — only a change to where the argmax/threshold cutoff is
+applied at inference time.
 
 ---
 
@@ -148,12 +203,36 @@ python evaluate.py --model /path/to/output/diabetic_retinopathy_model.keras \
 
 ---
 
+## Reproducing the Results
+
+The validation split is deterministic — `train_test_split(test_size=0.15,
+random_state=2006, stratify=y)` on the same dataframe always yields the same 550
+images, so the numbers above can be regenerated exactly rather than re-estimated.
+
+[Evaluation notebook on Kaggle](KAGGLE_URL_TODO)
+
+---
+
 ## Limitations
 
-* **Severe and Proliferative recall are low** — 193 and 295 training images respectively, insufficient for robust learning relative to the 1805 No DR images
+* **Referable-DR sensitivity (0.749) is too low for a screening tool** — roughly one
+  in four patients who need referral would be missed at the current decision
+  threshold; see [Referable DR](#referable-dr-screening-threshold-moderate-or-worse) above
+* **Moderate recall is 0.487** — Moderate→Mild is the single largest confusion (47
+  cases), the dominant failure mode in the model
+* **Proliferative recall is 0.409** — the model misses more than half of true
+  Proliferative cases
+* **Only 29 Severe images in validation** — per-class metrics for Severe are based on
+  a small sample and should be treated as a rough estimate, not a precise one
+* **Single split, not cross-validated** — results come from one 550-image validation
+  set rather than an average over multiple folds, so they carry the variance of a
+  single sample
+* **Same validation set used for both early stopping and final reporting** — the 550
+  validation images are used both to early-stop training and to report the metrics
+  above, which introduces a mild optimistic bias. A held-out test set never seen
+  during model selection would give a more honest estimate.
 * **Not for clinical use** — this is an educational project, not a medical device
 * **Image quality dependency** — performance degrades on low-quality or non-standard fundus images
-* **Single split, reused for both stopping and reporting** — the same 550 validation images are used both to early-stop training and to report final metrics, which introduces a mild optimistic bias. A held-out test set never seen during model selection would give a more honest estimate.
 
 ---
 
