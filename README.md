@@ -1,10 +1,15 @@
 [![HuggingFace Demo](https://img.shields.io/badge/🤗%20Live%20Demo-HuggingFace-yellow)](https://huggingface.co/spaces/suhanii23/retinopathy-detector)
+[![Kaggle Notebook](https://img.shields.io/badge/Kaggle-Evaluation%20Notebook-20BEFF?logo=kaggle&logoColor=white)](https://www.kaggle.com/code/qipchip31/diabetic-retinopathy-evaluation)
+
 # 👁️ Diabetic Retinopathy Detector
 
 An AI-powered tool for detecting and classifying diabetic retinopathy from retinal fundus images into five severity stages.
 
 🔗 **Live Demo (HuggingFace Spaces)**
 https://huggingface.co/spaces/suhanii23/retinopathy-detector
+
+📓 **Evaluation Notebook (Kaggle)**
+https://www.kaggle.com/code/qipchip31/diabetic-retinopathy-evaluation
 
 ---
 
@@ -169,15 +174,25 @@ def preprocess_image(image_path, sigma_x=SIGMA_X):
 
 ```
 retinopathy-detector/
-├── app.py              # Gradio inference app
-├── preprocess.py        # Shared preprocessing (imported by train.py and app.py)
-├── model.py             # Model architecture + backbone freeze/unfreeze
-├── train.py             # Two-phase training CLI
-├── evaluate.py           # Evaluation CLI (metrics, confusion matrix, curves)
-├── requirements.txt      # Inference-only dependencies
-├── requirements-dev.txt   # Training/evaluation dependencies
+├── app.py                  # Gradio inference app (deployed to HF Spaces)
+├── preprocess.py           # Shared preprocessing — imported by train.py AND app.py
+├── model.py                # Model architecture + backbone freeze/unfreeze
+├── train.py                # Two-phase training CLI
+├── evaluate.py             # Evaluation CLI (metrics, confusion matrix, curves)
+├── requirements.txt        # Inference-only dependencies
+├── requirements-dev.txt    # Training/evaluation dependencies
+├── notebooks/
+│   └── diabetic-retinopathy-evaluation.ipynb
+├── assets/
+│   ├── confusion_matrix.png
+│   └── validation_predictions.png
 └── README.md
 ```
+
+`preprocess.py` is imported by both `train.py` and `app.py` rather than duplicated in
+each. This makes training/serving skew structurally impossible: there is exactly one
+implementation of the transform, so the pipeline applied at inference cannot silently
+drift from the one used during training.
 
 ---
 
@@ -209,7 +224,12 @@ The validation split is deterministic — `train_test_split(test_size=0.15,
 random_state=2006, stratify=y)` on the same dataframe always yields the same 550
 images, so the numbers above can be regenerated exactly rather than re-estimated.
 
-[Evaluation notebook on Kaggle](KAGGLE_URL_TODO)
+* 📓 [**Evaluation notebook on Kaggle**](https://www.kaggle.com/code/qipchip31/diabetic-retinopathy-evaluation) — runnable end to end, with full outputs
+* [`notebooks/diabetic-retinopathy-evaluation.ipynb`](notebooks/diabetic-retinopathy-evaluation.ipynb) — the same notebook, committed with outputs
+* [`evaluate.py`](evaluate.py) — script version
+
+The notebook pulls the deployed model directly from the HuggingFace Hub, so it
+measures the exact artifact being served rather than a locally retrained copy.
 
 ---
 
@@ -238,7 +258,15 @@ images, so the numbers above can be regenerated exactly rather than re-estimated
 
 ## Future Work
 
-* Add Grad-CAM heatmap overlay to show which retinal regions influenced the prediction
+* **Tune the referral threshold** to trade surplus specificity (0.979) for
+  sensitivity — the highest-value change available, and it requires no retraining
+* Reframe as **ordinal regression** with learned thresholds rather than plain 5-class
+  softmax, so the model is rewarded for adjacent predictions instead of only the
+  metric knowing the grades are ordered
+* **Focal loss** to stop spending model capacity on the easy No DR cases
+* Add **Grad-CAM** heatmap overlays to show which retinal regions influenced the
+  prediction — both for interpretability and to verify the model attends to
+  pathology rather than acquisition artefacts
 * Address class imbalance further with oversampling on minority classes
 * Experiment with ensemble models such as Xception + EfficientNet
 * Collect or augment more Severe and Proliferative samples
@@ -255,6 +283,6 @@ It is **not intended for clinical diagnosis**. Always consult a qualified ophtha
 
 ## Acknowledgements
 
-* Dataset: APTOS 2019 Blindness Detection (Kaggle)
+* Dataset: [APTOS 2019 Blindness Detection](https://www.kaggle.com/c/aptos2019-blindness-detection) (Kaggle)
 * Preprocessing: Ben Graham's retinal preprocessing method
-* Base architecture: Xception (Chollet, 2017)
+* Base architecture: [Xception](https://arxiv.org/abs/1610.02357) (Chollet, 2017)
