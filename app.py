@@ -1,126 +1,119 @@
+"""
+Gradio inference app for the diabetic retinopathy detector.
+
+Preprocessing is imported from preprocess.py rather than reimplemented here.
+That module is the single source of truth shared with train.py and evaluate.py,
+which eliminates training/serving skew by construction — the most common and
+most silent class of ML deployment bug.
+"""
+
 import gradio as gr
 import numpy as np
-import cv2
-import os
-import requests
-from tensorflow.keras.models import load_model
 from PIL import Image
+from huggingface_hub import hf_hub_download
+from tensorflow.keras.models import load_model
 
-# Constants
-IMAGE_HEIGHT = 299
-IMAGE_WIDTH = 299
-CLASSES = ['Normal', 'Mild', 'Moderate', 'Severe', 'Proliferative']
+from preprocess import preprocess_array
+
+CLASSES = ["Normal", "Mild", "Moderate", "Severe", "Proliferative"]
+
 CLASS_DESCRIPTIONS = {
-    'Normal': 'No signs of diabetic retinopathy detected.',
-    'Mild': 'Mild non-proliferative diabetic retinopathy. Early stage with microaneurysms.',
-    'Moderate': 'Moderate non-proliferative diabetic retinopathy. More severe than mild, with blocked blood vessels.',
-    'Severe': 'Severe non-proliferative diabetic retinopathy. Many blood vessels are blocked.',
-    'Proliferative': 'Proliferative diabetic retinopathy. Advanced stage with new abnormal blood vessel growth.'
+    "Normal": "No signs of diabetic retinopathy detected.",
+    "Mild": "Early stage, with microaneurysms present.",
+    "Moderate": "More advanced, with some blocked blood vessels.",
+    "Severe": "Many blood vessels are blocked.",
+    "Proliferative": "Advanced stage, with abnormal new blood vessel growth.",
 }
 
-# --- 🔽 Ensure model is available locally ---
-MODEL_PATH = "diabetic_retinopathy_full_model.h5"
-MODEL_URL = "https://github.com/suhanii-23/retinopathy-detector/releases/download/v1.0-model/diabetic_retinopathy_full_model.h5"
+# Referable DR is the clinically actionable threshold: Moderate or worse means
+# the patient should see an ophthalmologist. This is the decision a screening
+# tool actually supports, so it is surfaced explicitly.
+REFERABLE_THRESHOLD = 2
 
-if not os.path.exists(MODEL_PATH):
-    print("Downloading model from GitHub release...")
-    r = requests.get(MODEL_URL, allow_redirects=True)
-    with open(MODEL_PATH, "wb") as f:
-        f.write(r.content)
-    print("✅ Model downloaded successfully!")
-
-# Load model
+print("Downloading model from HuggingFace Hub...")
+MODEL_PATH = hf_hub_download(
+    repo_id="suhanii23/retinopathy-model",
+    filename="diabetic_retinopathy_model.keras",
+)
 model = load_model(MODEL_PATH)
-print("✅ Model loaded successfully!")
+print("Model loaded.")
 
-# --- Image Preprocessing ---
-def crop_image_from_gray(img, tol=7):
-    """Ben Graham's preprocessing: crop black borders"""
-    if img.ndim == 2:
-        mask = img > tol
-        return img[np.ix_(mask.any(1), mask.any(0))]
-    elif img.ndim == 3:
-        gray_img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-        mask = gray_img > tol
-        check_shape = img[:, :, 0][np.ix_(mask.any(1), mask.any(0))].shape[0]
-        if check_shape == 0:
-            return img
-        else:
-            img1 = img[:, :, 0][np.ix_(mask.any(1), mask.any(0))]
-            img2 = img[:, :, 1][np.ix_(mask.any(1), mask.any(0))]
-            img3 = img[:, :, 2][np.ix_(mask.any(1), mask.any(0))]
-            img = np.stack([img1, img2, img3], axis=-1)
-        return img
 
-def preprocess_image(image, sigmaX=10):
-    """Apply Ben Graham's preprocessing method"""
-    if isinstance(image, Image.Image):
-        image = np.array(image)
-    
-    image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-    image = crop_image_from_gray(image)
-    image = cv2.resize(image, (IMAGE_WIDTH, IMAGE_HEIGHT))
-    image = cv2.addWeighted(image, 4, cv2.GaussianBlur(image, (0, 0), sigmaX), -4, 128)
-    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    
-    return image
-
-# --- Prediction ---
 def predict_dr(image):
-    """Main prediction function"""
-    try:
-        processed = preprocess_image(image)
-        img_array = processed.astype('float32') / 255.0
-        img_array = np.expand_dims(img_array, axis=0)
-        predictions = model.predict(img_array, verbose=0)
-        binary_pred = (predictions > 0.5).astype(int)
-        final_class = binary_pred.sum(axis=1)[0] - 1
-        
-        confidence_str = "\n".join([
-            f"{CLASSES[i]}: {predictions[0][i]:.2%}"
-            for i in range(len(CLASSES))
-        ])
-        result_class = CLASSES[final_class]
-        description = CLASS_DESCRIPTIONS[result_class]
-        
-        return (
-            processed,
-            f"**Diagnosis: {result_class}**\n\n{description}",
-            confidence_str
-        )
-    
-    except Exception as e:
-        return None, f"Error: {str(e)}", {}
+    if image is None:
+        return "Please upload a retinal fundus image.", ""
 
-# --- Gradio UI ---
+    if isinstance(image, Image.Image):
+        image = np.array(image.convert("RGB"))
+
+    # Identical transform to training: crop -> resize 299 -> Ben Graham -> [-1, 1].
+    x = preprocess_array(image)
+    probs = model.predict(np.expand_dims(x, axis=0), verbose=0)[0]
+
+    # The head is a 5-way softmax, so the predicted class is the argmax.
+    # (Thresholding each output at 0.5 and summing would be ordinal/multi-label
+    # logic, which is incompatible with softmax: the probabilities sum to 1, so
+    # at most one can exceed 0.5, and the result collapses to 0 or 1.)
+    predicted = int(np.argmax(probs))
+    label = CLASSES[predicted]
+    confidence = float(probs[predicted])
+
+    referable = predicted >= REFERABLE_THRESHOLD
+    referral = (
+        "**Referable** — grade is Moderate or worse; ophthalmologist review indicated."
+        if referable
+        else "**Non-referable** — below the standard screening referral threshold."
+    )
+
+    summary = (
+        f"### {label}\n\n"
+        f"{CLASS_DESCRIPTIONS[label]}\n\n"
+        f"Model confidence: **{confidence:.1%}**\n\n"
+        f"{referral}"
+    )
+
+    breakdown = "\n".join(
+        f"{CLASSES[i]:<15s} {probs[i]:>7.2%}  {'#' * int(round(probs[i] * 40))}"
+        for i in range(len(CLASSES))
+    )
+
+    return summary, breakdown
+
+
 with gr.Blocks(title="Diabetic Retinopathy Detector") as demo:
-    gr.Markdown("""
-    # 🏥 Diabetic Retinopathy Detection  
-    Upload a retinal fundus image to detect diabetic retinopathy severity.
-    
-    **Classes:** Normal → Mild → Moderate → Severe → Proliferative
-    """)
-    
+    gr.Markdown(
+        "# 👁️ Diabetic Retinopathy Detector\n"
+        "Upload a retinal fundus image to grade diabetic retinopathy severity "
+        "across five clinical stages.\n\n"
+        "Xception backbone fine-tuned on the APTOS 2019 dataset, with Ben Graham "
+        "contrast normalisation."
+    )
+
     with gr.Row():
         with gr.Column():
-            input_image = gr.Image(type="pil", label="Upload Retinal Image")
-            predict_btn = gr.Button("🔍 Analyze Image", variant="primary")
-            
+            input_image = gr.Image(type="pil", label="Retinal fundus image")
+            predict_btn = gr.Button("Analyze", variant="primary")
         with gr.Column():
-            processed_image = gr.Image(label="Preprocessed Image")
             diagnosis = gr.Markdown()
-            confidence = gr.Textbox(label="Confidence Scores", lines=5)
-    
+            confidence_box = gr.Textbox(
+                label="Probability distribution across all five stages",
+                lines=6,
+                show_copy_button=True,
+            )
+
     predict_btn.click(
         fn=predict_dr,
         inputs=input_image,
-        outputs=[processed_image, diagnosis, confidence]
+        outputs=[diagnosis, confidence_box],
     )
-    
-    gr.Markdown("""
-    ### ⚠️ Medical Disclaimer  
-    This tool is for educational purposes only. Always consult a qualified healthcare provider.
-    """)
+
+    gr.Markdown(
+        "---\n"
+        "⚠️ **Educational project — not a medical device and not for clinical "
+        "diagnosis.** Performance on the Severe and Proliferative classes is "
+        "limited by training data scarcity. Always consult a qualified "
+        "ophthalmologist."
+    )
 
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=10000)
+    demo.launch(server_name="0.0.0.0", server_port=7860)
