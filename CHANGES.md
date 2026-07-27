@@ -96,16 +96,58 @@ seaborn, tqdm, pandas for `train.py`/`evaluate.py`, via `-r requirements.txt`.
   for both early stopping and final reporting (mild optimistic bias), and no
   independent held-out test set.
 
-## What I still need to do manually
+## Follow-up session — verify, measure, deploy
 
-1. **Re-run evaluation on Kaggle** using `evaluate.py` against the trained
-   model and the saved `val_split.npz`/`history.json`, then replace
-   `TODO_ACCURACY`, `TODO_QWK`, and the per-class table in `README.md` with the
-   real numbers.
-2. **Upload `preprocess.py` and `app.py` to the HuggingFace Space**
-   (`suhanii23/retinopathy-detector`) — this repo's `app.py` now imports
-   `model.py` and `preprocess.py`, so both need to go up alongside it, along
-   with `model.py` for the `CLASS_NAMES` import.
-3. **Update your resume bullet** — anything citing 95.96%/0.9172 needs to wait
-   for the re-run numbers above; don't quote a number until `evaluate.py` has
-   actually produced it.
+Ran Phase 0–4 of the follow-up pass: verified and committed the staged work,
+attempted to measure real metrics, and deployed the fix to the live Space.
+
+**Phase 0.** `app.py` was already using `np.argmax` and importing
+`preprocess_array` from `preprocess.py`, with no stale `255.0`/`> 0.5` left.
+One additional fix: `app.py` was still importing `CLASS_NAMES` from
+`model.py`, which would have pulled `tensorflow.keras.applications` (Xception)
+into the Space's cold start just to read five strings. Inlined the list into
+`app.py` instead; `model.py` is no longer imported by the app at all.
+Committed as `9d1c105`.
+
+**Phase 1 (model).** Fetched `diabetic_retinopathy_model.keras` from
+`suhanii23/retinopathy-model` and confirmed it: output shape `(None, 5)`,
+predictions on a zeros input sum to ~1.0 — genuinely a softmax head, which is
+the premise the argmax fix depends on. Side finding: the file is actually
+legacy HDF5 format despite its `.keras` extension, so newer Keras 3 loaders
+reject it outright (`Please ensure the file is an accessible .keras zip
+file`) or partially load it with initializer-deserialization errors. It loads
+fine either via TF 2.15's bundled Keras 2 (what `requirements.txt` pins) or
+via the `tf_keras` compatibility package — not an app-code problem, just worth
+knowing if the model is ever reloaded outside the pinned TF version.
+
+**Phase 1 (data) / Phase 2 (metrics) — blocked.** `kaggle competitions
+download -c aptos2019-blindness-detection` returned `401 Unauthorized`, not
+the 403-for-unaccepted-rules case anticipated — the credentials in
+`~/.kaggle/kaggle.json` (dated 2025-10-07) are invalid or expired, not a
+competition-access problem. Disk space was not the constraint (189GB free).
+Per your instruction, no metric was fabricated to work around this — the
+`TODO_ACCURACY`/`TODO_QWK`/`TODO` placeholders in `README.md` are unchanged.
+
+**Phase 4 (deploy) — completed, with an extra bug found along the way.**
+Uploaded `app.py`, `preprocess.py`, and `requirements.txt` to the
+`suhanii23/retinopathy-detector` Space. The first build failed
+(`BUILD_ERROR`): the Space's own `sdk_version: 6.10.0` config force-installs
+`gradio==6.10.0` in its build image regardless of `requirements.txt`, which
+conflicted with the pinned `gradio==4.44.0`. Removing that pin surfaced a
+second conflict — gradio 6.10.0 requires `huggingface-hub>=0.33.5`, which
+clashed with the pinned `huggingface_hub==0.23.0`. Relaxed both pins
+(`gradio` unpinned, `huggingface_hub>=0.33.5`) and the Space rebuilt to
+`RUNNING`. Runtime logs confirm `Model loaded successfully!` and the Gradio
+server starting; the only exception in the logs is from the Space platform's
+own auto-reload watcher thread (`spaces/_vendor/jurigged`), unrelated to this
+app's code and non-fatal. Committed as `494a595`.
+
+## What's still needed manually
+
+1. **Fix Kaggle credentials.** Generate a fresh token at kaggle.com →
+   Settings → API → Create New Token, replace `~/.kaggle/kaggle.json`, and
+   re-run this pass's Phase 1–3 (data download → `evaluate.py` against the
+   reproduced 550-image validation split → fill in `README.md`'s
+   `TODO_ACCURACY`/`TODO_QWK`/per-class table).
+2. **Update your resume bullet** — still nothing to quote until the above
+   produces real numbers.
