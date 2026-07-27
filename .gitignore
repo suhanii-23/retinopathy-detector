@@ -1,5 +1,16 @@
 venv/
 .venv/
-*.h5
 __pycache__/
+.ipynb_checkpoints/
+*.h5
+*.keras
+val_split.npz
+history.json
 .DS_Store
+
+# Dataset files
+*.csv
+train_images/
+test_images/
+data/
+*.zip

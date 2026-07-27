@@ -1,119 +1,105 @@
-"""
-Gradio inference app for the diabetic retinopathy detector.
-
-Preprocessing is imported from preprocess.py rather than reimplemented here.
-That module is the single source of truth shared with train.py and evaluate.py,
-which eliminates training/serving skew by construction — the most common and
-most silent class of ML deployment bug.
-"""
-
 import gradio as gr
 import numpy as np
-from PIL import Image
 from huggingface_hub import hf_hub_download
 from tensorflow.keras.models import load_model
 
-from preprocess import preprocess_array
+from preprocess import denormalize_for_display, preprocess_array
 
-CLASSES = ["Normal", "Mild", "Moderate", "Severe", "Proliferative"]
+MODEL_REPO_ID = "suhanii23/retinopathy-model"
+MODEL_FILENAME = "diabetic_retinopathy_model.keras"
+
+# Inlined rather than imported from model.py: importing model.py would pull in
+# tensorflow.keras.applications (Xception) at Space startup just to read five
+# strings, slowing down cold starts for no reason.
+CLASS_NAMES = ['No DR', 'Mild', 'Moderate', 'Severe', 'Proliferative DR']
 
 CLASS_DESCRIPTIONS = {
-    "Normal": "No signs of diabetic retinopathy detected.",
-    "Mild": "Early stage, with microaneurysms present.",
-    "Moderate": "More advanced, with some blocked blood vessels.",
-    "Severe": "Many blood vessels are blocked.",
-    "Proliferative": "Advanced stage, with abnormal new blood vessel growth.",
+    'No DR': 'No signs of diabetic retinopathy detected.',
+    'Mild': 'Mild non-proliferative diabetic retinopathy. Early stage with microaneurysms.',
+    'Moderate': 'Moderate non-proliferative diabetic retinopathy. More severe than mild, with blocked blood vessels.',
+    'Severe': 'Severe non-proliferative diabetic retinopathy. Many blood vessels are blocked.',
+    'Proliferative DR': 'Proliferative diabetic retinopathy. Advanced stage with new abnormal blood vessel growth.',
 }
 
-# Referable DR is the clinically actionable threshold: Moderate or worse means
-# the patient should see an ophthalmologist. This is the decision a screening
-# tool actually supports, so it is surfaced explicitly.
-REFERABLE_THRESHOLD = 2
+REFERABLE_THRESHOLD = 2  # Moderate or worse
 
-print("Downloading model from HuggingFace Hub...")
-MODEL_PATH = hf_hub_download(
-    repo_id="suhanii23/retinopathy-model",
-    filename="diabetic_retinopathy_model.keras",
-)
-model = load_model(MODEL_PATH)
-print("Model loaded.")
+model_path = hf_hub_download(repo_id=MODEL_REPO_ID, filename=MODEL_FILENAME)
+model = load_model(model_path)
+print("Model loaded successfully!")
+
+
+def bar_chart(probs):
+    lines = []
+    for name, p in zip(CLASS_NAMES, probs):
+        filled = int(round(p * 20))
+        bar = '█' * filled + '░' * (20 - filled)
+        lines.append(f'{name:<18} {bar} {p * 100:5.1f}%')
+    return '\n'.join(lines)
 
 
 def predict_dr(image):
     if image is None:
-        return "Please upload a retinal fundus image.", ""
+        return None, "Please upload an image before analyzing.", ""
 
-    if isinstance(image, Image.Image):
-        image = np.array(image.convert("RGB"))
+    image_rgb = np.array(image.convert('RGB'))
+    processed = preprocess_array(image_rgb)
 
-    # Identical transform to training: crop -> resize 299 -> Ben Graham -> [-1, 1].
-    x = preprocess_array(image)
-    probs = model.predict(np.expand_dims(x, axis=0), verbose=0)[0]
+    probs = model.predict(np.expand_dims(processed, axis=0), verbose=0)[0]
 
-    # The head is a 5-way softmax, so the predicted class is the argmax.
-    # (Thresholding each output at 0.5 and summing would be ordinal/multi-label
-    # logic, which is incompatible with softmax: the probabilities sum to 1, so
-    # at most one can exceed 0.5, and the result collapses to 0 or 1.)
-    predicted = int(np.argmax(probs))
-    label = CLASSES[predicted]
-    confidence = float(probs[predicted])
+    # argmax, not thresholding: the model has a softmax head, so its five
+    # outputs sum to 1.0 and at most one can ever exceed 0.5. Thresholding
+    # each output independently is ordinal/multi-label logic that belongs
+    # to a different kind of model — against a softmax it collapses the
+    # result to always 0 or 1 (No DR or Mild), making Moderate, Severe and
+    # Proliferative unreachable regardless of what the model predicts.
+    predicted_class = int(np.argmax(probs))
+    result_class = CLASS_NAMES[predicted_class]
+    description = CLASS_DESCRIPTIONS[result_class]
 
-    referable = predicted >= REFERABLE_THRESHOLD
-    referral = (
-        "**Referable** — grade is Moderate or worse; ophthalmologist review indicated."
-        if referable
-        else "**Non-referable** — below the standard screening referral threshold."
+    referable = predicted_class >= REFERABLE_THRESHOLD
+    referral_line = (
+        "**Referable — recommend referral to an ophthalmologist.**"
+        if referable else
+        "**Non-referable** based on this prediction."
     )
 
-    summary = (
-        f"### {label}\n\n"
-        f"{CLASS_DESCRIPTIONS[label]}\n\n"
-        f"Model confidence: **{confidence:.1%}**\n\n"
-        f"{referral}"
-    )
+    diagnosis_md = f"**Diagnosis: {result_class}**\n\n{description}\n\n{referral_line}"
+    display_image = denormalize_for_display(processed)
 
-    breakdown = "\n".join(
-        f"{CLASSES[i]:<15s} {probs[i]:>7.2%}  {'#' * int(round(probs[i] * 40))}"
-        for i in range(len(CLASSES))
-    )
-
-    return summary, breakdown
+    return display_image, diagnosis_md, bar_chart(probs)
 
 
 with gr.Blocks(title="Diabetic Retinopathy Detector") as demo:
-    gr.Markdown(
-        "# 👁️ Diabetic Retinopathy Detector\n"
-        "Upload a retinal fundus image to grade diabetic retinopathy severity "
-        "across five clinical stages.\n\n"
-        "Xception backbone fine-tuned on the APTOS 2019 dataset, with Ben Graham "
-        "contrast normalisation."
-    )
+    gr.Markdown("""
+    # Diabetic Retinopathy Detection
+    Upload a retinal fundus image to detect diabetic retinopathy severity.
+
+    **Classes:** No DR → Mild → Moderate → Severe → Proliferative DR
+    """)
 
     with gr.Row():
         with gr.Column():
-            input_image = gr.Image(type="pil", label="Retinal fundus image")
-            predict_btn = gr.Button("Analyze", variant="primary")
+            input_image = gr.Image(type="pil", label="Upload Retinal Image")
+            predict_btn = gr.Button("Analyze Image", variant="primary")
+
         with gr.Column():
+            processed_image = gr.Image(label="Preprocessed Image")
             diagnosis = gr.Markdown()
-            confidence_box = gr.Textbox(
-                label="Probability distribution across all five stages",
-                lines=6,
-                show_copy_button=True,
-            )
+            probability_chart = gr.Textbox(label="Class Probabilities", lines=6)
 
     predict_btn.click(
         fn=predict_dr,
         inputs=input_image,
-        outputs=[diagnosis, confidence_box],
+        outputs=[processed_image, diagnosis, probability_chart],
     )
 
-    gr.Markdown(
-        "---\n"
-        "⚠️ **Educational project — not a medical device and not for clinical "
-        "diagnosis.** Performance on the Severe and Proliferative classes is "
-        "limited by training data scarcity. Always consult a qualified "
-        "ophthalmologist."
-    )
+    gr.Markdown("""
+    ### Medical Disclaimer
+    This tool is for **educational purposes only** and is **not a medical device**.
+    It has not been clinically validated. Severe and Proliferative DR performance
+    is limited by data scarcity in the training set — do not rely on this tool for
+    diagnosis. Always consult a qualified ophthalmologist for medical evaluation.
+    """)
 
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860)
+    demo.launch()
